@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+"""Test suite for the QBL Solution Analyzer.
+
+Standard library only, no test runner required:
+
+    python3 tests/test_analyzer.py
+
+Every test parses a fixture through the real CLI and asserts on the artifacts,
+so the tests exercise the same path a user does.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ANALYZER = REPO_ROOT / "scripts" / "qbl_analyzer.py"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def run_cli(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(ANALYZER), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+class AnalyzerTestCase(unittest.TestCase):
+    """Parses the main fixture once per class and shares the output directory."""
+
+    fixture = "solution-qbl.yaml"
+    table_schema = "table-schema.json"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.output_dir = Path(tempfile.mkdtemp(prefix="qbl-test-"))
+        args = [
+            "summary",
+            str(FIXTURES / cls.fixture),
+            "--output-dir",
+            str(cls.output_dir),
+            "--label",
+            "Test Solution",
+        ]
+        if cls.table_schema:
+            args += ["--table-schema", str(FIXTURES / cls.table_schema)]
+        cls.result = run_cli(*args)
+        if cls.result.returncode != 0:
+            raise AssertionError(f"summary failed: {cls.result.stderr}")
+        cls.manifest = json.loads(cls.result.stdout)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.output_dir, ignore_errors=True)
+
+    def query(self, collection: str, *args: str) -> str:
+        result = run_cli("query", str(self.output_dir), collection, *args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def rows(self, collection: str, *args: str) -> list:
+        out = self.query(collection, "--format", "json", "--limit", "-1", *args)
+        return json.loads(out)["rows"]
+
+
+class TestSummaryArtifacts(AnalyzerTestCase):
+    def test_reports_success(self):
+        self.assertTrue(self.manifest["success"])
+        self.assertEqual(self.manifest["qbl_version"], "0.14")
+
+    def test_writes_every_declared_artifact(self):
+        outputs = self.manifest["outputs"]
+        for key in ("workbook", "json", "summary", "digest", "bundle"):
+            self.assertTrue(Path(outputs[key]).is_file(), f"missing {key}")
+        self.assertTrue(outputs["csv_files"], "no CSV files written")
+        for path in outputs["csv_files"]:
+            self.assertTrue(Path(path).is_file(), path)
+
+    def test_manifest_offers_next_steps(self):
+        self.assertIn("read_first", self.manifest["next_steps"])
+        self.assertTrue(Path(self.manifest["next_steps"]["read_first"]).is_file())
+
+    def test_parses_expected_entity_counts(self):
+        counts = self.manifest["entity_counts"]
+        self.assertEqual(counts["tables"], 3)
+        self.assertEqual(counts["fields"], 9)
+        self.assertEqual(counts["relationships"], 2)
+        self.assertEqual(counts["roles"], 2)
+        self.assertEqual(counts["pipelines"], 1)
+        self.assertEqual(counts["pipeline_steps"], 3)
+
+
+class TestTableSchemaEnrichment(AnalyzerTestCase):
+    def test_resolves_runtime_table_ids_from_the_qbl_alias(self):
+        by_logical = {r["Table Logical ID"]: r for r in self.rows("tables")}
+        self.assertEqual(by_logical["$Table_Projects"]["Table ID"], "bqx1proj")
+        self.assertEqual(by_logical["$Table_Tasks"]["Table ID"], "bqx1task")
+        self.assertEqual(by_logical["$Table_Vendors"]["Table ID"], "bqx1vend")
+
+    def test_resolves_ids_the_export_declares_itself(self):
+        fields = {r["Field Logical ID"]: r for r in self.rows("fields")}
+        self.assertEqual(fields["$Field_ProjectName"]["Field ID"], "6")
+        roles = {r["Role Logical ID"]: r for r in self.rows("roles")}
+        self.assertEqual(roles["$Role_Admin"]["Role ID"], "10")
+
+    def test_resolves_cross_app_lookup_targets(self):
+        fields = {r["Field Logical ID"]: r for r in self.rows("fields")}
+        vendor = fields["$Field_VendorLookup"]
+        self.assertEqual(vendor["Lookup Target Table"], "$Table_Vendors")
+        self.assertEqual(vendor["Lookup Target Table ID"], "bqx1vend")
+        self.assertEqual(vendor["Lookup Target Field ID"], "6")
+
+    def test_resolves_summary_targets(self):
+        fields = {r["Field Logical ID"]: r for r in self.rows("fields")}
+        total = fields["$Field_TaskTotal"]
+        self.assertEqual(total["Summary Target Table ID"], "bqx1task")
+        self.assertEqual(total["Summary Target Field ID"], "7")
+
+
+class TestWithoutTableSchema(AnalyzerTestCase):
+    """The table schema is optional; only runtime IDs should go blank."""
+
+    table_schema = None
+
+    def test_runtime_table_ids_are_blank(self):
+        for row in self.rows("tables"):
+            self.assertEqual(row["Table ID"], "")
+
+    def test_qbl_declared_ids_still_resolve(self):
+        fields = {r["Field Logical ID"]: r for r in self.rows("fields")}
+        self.assertEqual(fields["$Field_ProjectName"]["Field ID"], "6")
+
+    def test_aliases_survive(self):
+        aliases = {r["Table Alias"] for r in self.rows("tables")}
+        self.assertIn("_DBID_PROJECTS", aliases)
+
+
+class TestPipelineUsageIsCounted(unittest.TestCase):
+    """A field referenced only by a pipeline must not be flagged unused.
+
+    Pipelines live at the `Resources` level, outside any application subtree.
+    Flagging such a field `Potentially Unused` would recommend deleting a field
+    a live integration depends on.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.output_dir = Path(tempfile.mkdtemp(prefix="qbl-pipe-"))
+        result = run_cli(
+            "summary",
+            str(FIXTURES / "pipeline-only-qbl.yaml"),
+            "--output-dir",
+            str(cls.output_dir),
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        out = run_cli("query", str(cls.output_dir), "fields", "--format", "json", "--limit", "-1")
+        cls.fields = {r["Field Logical ID"]: r for r in json.loads(out.stdout)["rows"]}
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.output_dir, ignore_errors=True)
+
+    def test_pipeline_only_field_is_not_flagged_unused(self):
+        field = self.fields["$Field_OnlyPipeline"]
+        self.assertEqual(field["Used in Pipelines"], "Yes")
+        self.assertEqual(field["Total Usage Count"], "1")
+        self.assertEqual(field["Potentially Unused"], "No")
+
+    def test_genuinely_unreferenced_field_is_still_flagged(self):
+        field = self.fields["$Field_Nowhere"]
+        self.assertEqual(field["Used in Pipelines"], "No")
+        self.assertEqual(field["Total Usage Count"], "0")
+        self.assertEqual(field["Potentially Unused"], "Yes")
+
+
+class TestNoDoubleCounting(AnalyzerTestCase):
+    """The cross-reference pass must add only references analyzers did not see."""
+
+    def test_report_and_pipeline_references_sum_exactly(self):
+        fields = {r["Field Logical ID"]: r for r in self.rows("fields")}
+        pipeline_refs = {}
+        for row in self.rows("field_pipeline_matrix"):
+            key = row["Field Logical ID"]
+            pipeline_refs[key] = pipeline_refs.get(key, 0) + 1
+
+        for logical_id, count in pipeline_refs.items():
+            field = fields[logical_id]
+            self.assertEqual(field["Used in Pipelines"], "Yes")
+            # The pipeline references are included, and the total never drops
+            # below them, which is what a double-count or an overwrite would do.
+            self.assertGreaterEqual(int(field["Total Usage Count"]), count)
+
+    def test_budget_totals_report_plus_pipeline(self):
+        fields = {r["Field Logical ID"]: r for r in self.rows("fields")}
+        budget = fields["$Field_Budget"]
+        self.assertEqual(budget["Used in Reports"], "Yes")
+        self.assertEqual(budget["Used in Pipelines"], "Yes")
+        self.assertEqual(budget["Total Usage Count"], "2")
+
+
+class TestDigest(AnalyzerTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.digest = Path(cls.manifest["outputs"]["digest"]).read_text(encoding="utf-8")
+
+    def test_lists_every_table(self):
+        for logical_id in ("$Table_Projects", "$Table_Tasks", "$Table_Vendors"):
+            self.assertIn(logical_id, self.digest)
+
+    def test_nothing_is_truncated(self):
+        self.assertNotIn("...and", self.digest)
+
+    def test_surfaces_the_integration_surface(self):
+        self.assertIn("warehouse.example.com", self.digest)
+        self.assertIn("Nightly Sync", self.digest)
+
+    def test_does_not_embed_absolute_paths(self):
+        self.assertNotIn(str(self.output_dir), self.digest)
+
+    def test_unused_field_cross_check_agrees_with_the_parser(self):
+        # The cross-check should find nothing.
+        self.assertIn("still referenced elsewhere (flag is a false positive): 0", self.digest)
+
+
+class TestQueryEngine(AnalyzerTestCase):
+    def test_equality_filter(self):
+        rows = self.rows("fields", "--where", "Field Type=Currency")
+        self.assertEqual([r["Field Logical ID"] for r in rows], ["$Field_Budget"])
+
+    def test_contains_filter(self):
+        rows = self.rows("fields", "--where", "Field Type=~Lookup")
+        self.assertEqual(len(rows), 2)
+
+    def test_not_contains_filter(self):
+        rows = self.rows("fields", "--where", "Field Type!~Lookup")
+        self.assertEqual(len(rows), 7)
+
+    def test_blank_and_non_blank_filters(self):
+        blank = self.rows("fields", "--where", "Summary Target Field=")
+        non_blank = self.rows("fields", "--where", "Summary Target Field!=")
+        self.assertEqual(len(non_blank), 1)
+        self.assertEqual(len(blank) + len(non_blank), 9)
+
+    def test_numeric_comparisons(self):
+        self.assertEqual(len(self.rows("fields", "--where", "Total Usage Count>=2")), 3)
+        self.assertEqual(len(self.rows("fields", "--where", "Total Usage Count<1")), 5)
+
+    def test_filters_are_anded(self):
+        rows = self.rows(
+            "fields", "--where", "Field Type=~Lookup", "--where", "Total Usage Count>=2"
+        )
+        self.assertEqual([r["Field Logical ID"] for r in rows], ["$Field_VendorLookup"])
+
+    def test_column_projection_and_case_insensitivity(self):
+        rows = self.rows("fields", "--columns", "field label", "--limit", "-1")
+        self.assertEqual(set(rows[0].keys()), {"Field Label"})
+
+    def test_distinct_collapses_duplicates(self):
+        out = self.query("fields", "--columns", "Field Type", "--distinct", "--count")
+        self.assertIn("distinct", out)
+
+    def test_count_only_reports_matches_not_zero(self):
+        out = self.query("fields", "--where", "Field Type=Text", "--count")
+        self.assertIn("of 9 row(s) matched", out)
+        self.assertNotIn("No rows matched", out)
+
+    def test_csv_and_json_formats(self):
+        self.assertIn("Field Logical ID", self.query("fields", "--format", "csv", "--limit", "2"))
+        payload = json.loads(self.query("fields", "--format", "json", "--limit", "2"))
+        self.assertEqual(payload["returned_rows"], 2)
+        self.assertEqual(payload["total_rows"], 9)
+
+    def test_limit_truncation_is_reported(self):
+        out = self.query("fields", "--limit", "2")
+        self.assertIn("capped by --limit", out)
+
+    def test_collections_lists_columns(self):
+        result = run_cli("collections", str(self.output_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("field_pipeline_matrix", result.stdout)
+        self.assertIn("columns:", result.stdout)
+
+
+class TestErrorHandling(AnalyzerTestCase):
+    def assert_query_error(self, *args: str) -> str:
+        result = run_cli("query", str(self.output_dir), *args)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        return result.stderr
+
+    def test_unknown_collection_lists_valid_names(self):
+        self.assertIn("fields", self.assert_query_error("nonesuch"))
+
+    def test_unknown_column_lists_valid_names(self):
+        self.assertIn("Field Label", self.assert_query_error("fields", "--where", "Nope=1"))
+
+    def test_malformed_filter_explains_the_syntax(self):
+        self.assertIn("column=value", self.assert_query_error("fields", "--where", "garbage"))
+
+    def test_missing_input_file_exits_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_cli("summary", str(FIXTURES / "nope.yaml"), "--output-dir", tmp)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not found", json.loads(result.stderr)["message"])
+
+    def test_oversized_input_is_rejected_before_parsing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big-qbl.yaml"
+            # Sparse file: the size check runs on stat, so no real bytes needed.
+            with big.open("wb") as handle:
+                handle.truncate(64 * 1024 * 1024)
+            result = run_cli("summary", str(big), "--output-dir", str(Path(tmp) / "out"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("exceeding", json.loads(result.stderr)["message"])
+
+
+class TestCredentialScanner(unittest.TestCase):
+    """Unit tests for detection, run directly against the scanner."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        from secret_scanner import scan_text  # noqa: E402
+
+        cls.scan = staticmethod(scan_text)
+
+    def assert_detected(self, text: str, expected_kind: str = ""):
+        hits = self.scan(text)
+        self.assertTrue(hits, f"nothing detected in {text!r}")
+        if expected_kind:
+            self.assertTrue(
+                any(expected_kind in h["kind"] for h in hits),
+                f"expected {expected_kind!r} in {[h['kind'] for h in hits]}",
+            )
+        return hits
+
+    def test_detects_vendor_token_formats(self):
+        self.assert_detected("key=sk_live_51EXAMPLE000000000000", "Stripe")
+        self.assert_detected("AKIAIOSFODNN7EXAMPLE", "AWS")
+        self.assert_detected("ghp_EXAMPLE000000000000000000000000", "GitHub")
+        self.assert_detected("xoxb-1234567890-abcdefghijkl", "Slack")
+        self.assert_detected("AIzaSyA1234567890abcdefghijklmnopqrstuvw", "Google")
+        self.assert_detected("-----BEGIN RSA PRIVATE KEY-----", "PEM")
+
+    def test_detects_basic_auth_in_url(self):
+        self.assert_detected("https://admin:Sup3rS3cret@corp.com/api", "Basic auth")
+
+    def test_detects_credential_key_names(self):
+        self.assert_detected('{"client_secret": "9a8b7c6d5e4f3g2h1i0j"}', "client_secret")
+        self.assert_detected("?password=hunter2000abc", "password")
+
+    def test_reports_one_row_per_secret(self):
+        # A value matching both a vendor format and a credential key name is a
+        # single finding, not two.
+        hits = self.scan("https://x/y?api_key=sk_live_AKIA0000EXAMPLE0000")
+        self.assertEqual(len(hits), 1, [h["kind"] for h in hits])
+
+    def test_masks_the_value(self):
+        hits = self.assert_detected("?password=hunter2000abc")
+        masked = hits[0]["masked"]
+        self.assertNotIn("hunter2000abc", masked)
+        self.assertIn("*", masked)
+
+    def test_ignores_stored_credential_references(self):
+        # Referencing a stored secret is the correct pattern and must stay quiet.
+        for safe in (
+            "?api_key={{ secrets.vendor_key }}",
+            "?api_key={account.token}",
+            '{"token": "{{ connection.access_token }}"}',
+        ):
+            self.assertEqual(self.scan(safe), [], safe)
+
+    def test_ignores_ordinary_configuration(self):
+        for safe in (
+            "https://api.example.com/v1/records?tableId=bqx1task&limit=100",
+            '{"to": "bqx1task", "rows": 250}',
+            "Sum([Amount 0], [Tax 0]) * 1.000",
+            '{"password": "changeme"}',
+            '{"api_key": ""}',
+            '{"secret": "TBD"}',
+            "GET /v1/records/query",
+        ):
+            self.assertEqual(self.scan(safe), [], safe)
+
+
+class TestCredentialReporting(AnalyzerTestCase):
+    """The warning must reach the digest and the manifest."""
+
+    fixture = "credentials-qbl.yaml"
+    table_schema = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.digest = Path(cls.manifest["outputs"]["digest"]).read_text(encoding="utf-8")
+
+    def test_manifest_counts_findings(self):
+        self.assertEqual(self.manifest["possible_credential_count"], 3)
+
+    def test_digest_leads_with_the_warning(self):
+        self.assertIn("## Possible hardcoded credentials", self.digest)
+        self.assertLess(
+            self.digest.index("## Possible hardcoded credentials"),
+            self.digest.index("## Architecture"),
+            "the warning should appear before the architecture section",
+        )
+
+    def test_warning_table_masks_values(self):
+        # The table must not restate the secret. The digest as a whole is not
+        # redacted -- the endpoint list still carries raw URLs by design -- so
+        # scope this assertion to the warning section.
+        warning = self.digest.split("## Architecture")[0]
+        table = warning.split("| Where | Field | Kind | Value |")[1]
+        self.assertNotIn("sk_live_AKIA0000EXAMPLE0000", table)
+        self.assertNotIn("ghp_EXAMPLE000000000000000000000000", table)
+        self.assertIn("sk_l", table)
+
+    def test_warning_states_that_the_digest_is_not_redacted(self):
+        warning = self.digest.split("## Architecture")[0]
+        self.assertIn("are not redacted anywhere else", warning)
+
+    def test_raw_values_remain_in_the_digest_by_design(self):
+        # Faithfulness is the chosen trade-off: the analyst can see and act on
+        # the real endpoint. The warning above tells them to treat it as such.
+        self.assertIn("sk_live_AKIA0000EXAMPLE0000", self.digest)
+
+    def test_digest_names_the_location(self):
+        self.assertIn("pipeline_steps.HTTP URL", self.digest)
+        self.assertIn("application_variables.Value", self.digest)
+        self.assertIn("Call Vendor API", self.digest)
+
+    def test_full_values_remain_available_for_remediation(self):
+        inventory = Path(self.manifest["outputs"]["json"]).read_text(encoding="utf-8")
+        self.assertIn("sk_live_AKIA0000EXAMPLE0000", inventory)
+
+    def test_correctly_configured_step_is_not_flagged(self):
+        self.assertNotIn("Correctly Configured Call", self.digest.split("## Architecture")[0])
+
+
+class TestNoCredentialNoise(AnalyzerTestCase):
+    """A clean solution must not get a warning section at all."""
+
+    def test_no_section_and_zero_count(self):
+        digest = Path(self.manifest["outputs"]["digest"]).read_text(encoding="utf-8")
+        self.assertEqual(self.manifest["possible_credential_count"], 0)
+        self.assertNotIn("Possible hardcoded credentials", digest)
+
+
+class TestOlderSchemaVersion(AnalyzerTestCase):
+    fixture = "v012-qbl.yaml"
+    table_schema = None
+
+    def test_parses_v012(self):
+        self.assertEqual(self.manifest["qbl_version"], "0.12")
+        self.assertTrue(self.manifest["success"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

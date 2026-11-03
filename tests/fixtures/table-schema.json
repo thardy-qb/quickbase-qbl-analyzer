@@ -1,0 +1,5 @@
+[
+  {"id": "bqx1proj", "alias": "_DBID_PROJECTS", "name": "Projects", "keyFieldId": 3, "sizeLimit": "500 MB", "spaceUsed": "1 MB", "spaceRemaining": "499 MB", "updated": "2026-01-05T00:00:00Z"},
+  {"id": "bqx1task", "alias": "_DBID_TASKS", "name": "Tasks", "keyFieldId": 3, "sizeLimit": "500 MB", "spaceUsed": "2 MB", "spaceRemaining": "498 MB", "updated": "2026-01-06T00:00:00Z"},
+  {"id": "bqx1vend", "alias": "_DBID_VENDORS", "name": "Vendors", "keyFieldId": 3, "sizeLimit": "500 MB", "spaceUsed": "1 MB", "spaceRemaining": "499 MB", "updated": "2026-01-07T00:00:00Z"}
+]
