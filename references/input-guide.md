@@ -10,7 +10,7 @@ A QBL export normally contains top-level `Solution` and `Resources` keys:
 
 ```yaml
 Solution:
-  Version: 0.14
+  Version: 0.15
 Resources:
   $App_Main:
     Type: QB::Application
