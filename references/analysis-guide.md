@@ -47,6 +47,7 @@ Column and collection names are matched case-insensitively but never abbreviated
 | `pipeline_steps` | `Table` | `Table Name` (the step's table, its target's for an update) |
 | `fields` | `Label`, `Type` | `Field Label`, `Field Type` |
 | `rules` | `Name`, `Conditions` | `Rule Name`, `Rule Summary` |
+| `pages` | `Code`, `Body` | `Page Content` (a code page's code, a rich text page's text) |
 
 ## Question patterns
 

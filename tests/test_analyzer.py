@@ -403,7 +403,23 @@ class TestCredentialReporting(AnalyzerTestCase):
         cls.digest = Path(cls.manifest["outputs"]["digest"]).read_text(encoding="utf-8")
 
     def test_manifest_counts_findings(self):
-        self.assertEqual(self.manifest["possible_credential_count"], 3)
+        self.assertEqual(self.manifest["possible_credential_count"], 5)
+
+    def test_an_exported_variable_counts_once(self):
+        # An export moves a variable's value into ParameterDefinitions and
+        # points the variable at it, so the same key is seen in both places.
+        warning = self.digest.split("## Architecture")[0]
+        rows = [line for line in warning.splitlines() if "sk_t" in line and "EXPORT" not in line]
+        exported = [line for line in rows if "ExportedKey" in line or "Variable_Value_1" in line]
+        self.assertEqual(len(exported), 1, exported)
+        self.assertIn("also", exported[0])
+
+    def test_finds_a_token_pasted_into_a_code_page(self):
+        # The scan targets `pages.Page Content`; until the parser wrote that
+        # column, a code page was never scanned at all.
+        self.assertIn("pages.Page Content", self.digest)
+        self.assertIn("usage-sync.html", self.digest)
+        self.assertNotIn("clean.html", self.digest.split("## Architecture")[0])
 
     def test_digest_leads_with_the_warning(self):
         self.assertIn("## Possible hardcoded credentials", self.digest)

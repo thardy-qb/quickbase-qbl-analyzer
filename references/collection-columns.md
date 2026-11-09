@@ -127,7 +127,7 @@ Home page widgets, including the buttons, links and search fields they hold.
 
 Page metadata.
 
-`App Logical ID`, `Page Logical ID`, `Page ID`, `Page Name`, `Page Type`, `Assigned to Role Homepage`, `Mapped to Role Permissions`, `Used by Roles`, `Has Sidebar`, `Has Main Section`, `Total Widgets`, `Has Text`, `Text Length`, `Has Code`, `Code Length`
+`App Logical ID`, `Page Logical ID`, `Page ID`, `Page Name`, `Page Type`, `Assigned to Role Homepage`, `Mapped to Role Permissions`, `Used by Roles`, `Has Sidebar`, `Has Main Section`, `Total Widgets`, `Has Text`, `Text Length`, `Page Content`, `Has Code`, `Code Length`
 
 ## `parameter_definitions`
 

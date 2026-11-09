@@ -16,6 +16,7 @@ correct way to reference a stored credential and are never flagged.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
@@ -112,6 +113,11 @@ def _looks_like_secret(value: str) -> bool:
     return has_digit and has_alpha
 
 
+def _fingerprint(secret: str) -> str:
+    """Identify a secret without keeping it, so a repeat can be recognised."""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
 def scan_text(text: str) -> List[Dict[str, str]]:
     """Return findings for one free-text value."""
     if not text:
@@ -127,7 +133,7 @@ def scan_text(text: str) -> List[Dict[str, str]]:
             if _is_template_reference(matched) or matched in reported:
                 continue
             reported.add(matched)
-            findings.append({"kind": label, "masked": mask(matched)})
+            findings.append({"kind": label, "masked": mask(matched), "_key": _fingerprint(matched)})
 
     for pair_pattern in (_QUERY_PAIR, _JSON_PAIR):
         for match in pair_pattern.finditer(text):
@@ -143,7 +149,8 @@ def scan_text(text: str) -> List[Dict[str, str]]:
             if any(stripped in seen or seen in stripped for seen in reported):
                 continue
             reported.add(stripped)
-            findings.append({"kind": f"value assigned to `{name}`", "masked": mask(value)})
+            findings.append({"kind": f"value assigned to `{name}`", "masked": mask(value),
+                             "_key": _fingerprint(stripped)})
 
     return findings
 
@@ -158,8 +165,16 @@ def _row_label(row: Mapping[str, Any], id_columns: Sequence[str]) -> str:
 
 
 def scan_parsed_data(parsed_data: Mapping[str, Any]) -> List[Dict[str, str]]:
-    """Scan every configured collection for credential-like strings."""
+    """Scan every configured collection for credential-like strings.
+
+    One row per distinct secret. An export moves an application variable's
+    value into a `ParameterDefinitions` entry and points the variable at it
+    with `!Var`, so the same key is seen twice; counting it twice told the
+    reader there were more credentials to rotate than there are. A repeat is
+    listed as another place the secret appears.
+    """
     findings: List[Dict[str, str]] = []
+    first_seen: Dict[str, Dict[str, Any]] = {}
 
     for collection, columns, id_columns in SCAN_TARGETS:
         rows = parsed_data.get(collection)
@@ -173,15 +188,21 @@ def scan_parsed_data(parsed_data: Mapping[str, Any]) -> List[Dict[str, str]]:
                 if not isinstance(value, str) or not value.strip():
                     continue
                 for hit in scan_text(value):
-                    findings.append(
-                        {
-                            "collection": collection,
-                            "column": column,
-                            "location": _row_label(row, id_columns),
-                            "kind": hit["kind"],
-                            "masked": hit["masked"],
-                        }
-                    )
+                    location = _row_label(row, id_columns)
+                    earlier = first_seen.get(hit["_key"])
+                    if earlier is not None:
+                        earlier["also_at"].append(f"{location} (`{collection}.{column}`)")
+                        continue
+                    finding = {
+                        "collection": collection,
+                        "column": column,
+                        "location": location,
+                        "kind": hit["kind"],
+                        "masked": hit["masked"],
+                        "also_at": [],
+                    }
+                    first_seen[hit["_key"]] = finding
+                    findings.append(finding)
 
     return findings
 
@@ -210,8 +231,11 @@ def render_section(findings: Sequence[Mapping[str, str]]) -> List[str]:
         "|---|---|---|---|",
     ]
     for finding in findings:
+        where = finding["location"]
+        if finding.get("also_at"):
+            where += " (also " + "; ".join(finding["also_at"]) + ")"
         lines.append(
-            f"| {finding['location']} | `{finding['collection']}.{finding['column']}` "
+            f"| {where} | `{finding['collection']}.{finding['column']}` "
             f"| {finding['kind']} | `{finding['masked']}` |"
         )
     lines.append("")
