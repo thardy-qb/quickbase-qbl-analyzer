@@ -520,6 +520,95 @@ class TestExportedShapes(unittest.TestCase):
         self.assertEqual([("SCH012", "warning")], found)
 
 
+class TestHowTheApplicationBehaves(AnalyzerTestCase):
+    """The digest and collections answer behaviour questions on their own.
+
+    Each of these once needed the raw export: a relationship count that was
+    double, an update step with no table, a pipeline with no schedule or
+    filter in view, and a form rule whose condition parsed empty.
+    """
+
+    fixture = "lending-library-qbl.yaml"
+    table_schema = None
+
+    def setUp(self) -> None:
+        self.digest = Path(self.manifest["outputs"]["digest"]).read_text(encoding="utf-8")
+
+    def test_each_relationship_is_counted_once(self):
+        self.assertEqual(self.manifest["relationship_count"], 2)
+        self.assertEqual(self.manifest["entity_counts"]["relationships"], 4)
+        self.assertIn("### Relationships (2)", self.digest)
+        self.assertEqual(1, self.digest.count("- Branches -> Books"))
+
+    def test_the_child_side_filter_lists_each_relationship_once(self):
+        rows = self.rows("relationships", "--where", "Relationship Side=Child",
+                         "--columns", "Parent Table Name,Child Table Name")
+        self.assertEqual(
+            sorted((r["Parent Table Name"], r["Child Table Name"]) for r in rows),
+            [("Books", "Loans"), ("Branches", "Books")])
+
+    def test_an_update_step_carries_its_targets_table(self):
+        rows = self.rows("pipeline_steps", "--where", "Step Name=Update the book")
+        self.assertEqual(rows[0]["Table Name"], "Books")
+        self.assertEqual(rows[0]["Target Step ID"], "b")
+        matrix = self.rows("pipeline_table_matrix", "--where", "Step Name=Update the book")
+        self.assertEqual([(r["Table Name"], r["Reference Type"]) for r in matrix],
+                         [("Books", "Target Step")])
+
+    def test_schedules_filters_and_inputs_are_in_the_digest(self):
+        self.assertIn("Runs on schedule `0 2 * * *` (Europe/Dublin)", self.digest)
+        self.assertIn('where is_overdue is true OR title contains "Atlas"', self.digest)
+        self.assertIn('where loan_status equals "Returned" -- when Loan Status changes', self.digest)
+        self.assertIn("`c` update Books -- the record step `b` found -- "
+                      "sets Last_Returned = {{ a.returned_on }}", self.digest)
+
+    def test_a_field_tested_by_a_form_rule_is_marked_used(self):
+        rows = self.rows("fields", "--where", "Field Label=Loan Status",
+                         "--columns", "Used in Form Rules")
+        self.assertEqual(rows[0]["Used in Form Rules"], "Yes")
+
+    def test_form_rules_are_summarized(self):
+        self.assertIn('**Hide notes while open** -- When Loan Status IsEqualTo "Open" '
+                      '-> Hide Return Notes', self.digest)
+        self.assertIn("**Flag either note** [disabled]", self.digest)
+
+    def test_a_guessed_column_names_the_real_one(self):
+        result = run_cli("query", str(self.output_dir), "relationships",
+                         "--columns", "Parent Table")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Did you mean", result.stdout + result.stderr)
+        self.assertIn("'Parent Table Name'", result.stdout + result.stderr)
+
+
+class TestCollectionColumnsReference(AnalyzerTestCase):
+    """The columns the guide tells a reader to use exist."""
+
+    fixture = "lending-library-qbl.yaml"
+    table_schema = None
+
+    def test_the_guide_names_only_real_columns(self):
+        guide = (REPO_ROOT / "references" / "analysis-guide.md").read_text(encoding="utf-8")
+        table = guide.split("The ones most often guessed wrong:", 1)[1].split("\n\n", 1)[0]
+        for line in table.splitlines()[2:]:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            collection = cells[0].strip("`")
+            columns = [c.split(" (")[0].strip().strip("`") for c in cells[2].split(",")]
+            for column in columns:
+                result = run_cli("query", str(self.output_dir), collection, "--columns", column,
+                                 "--limit", "1")
+                self.assertEqual(result.returncode, 0, f"{collection}.{column}: {result.stdout}")
+
+    def test_the_rendered_reference_lists_every_collection(self):
+        reference = REPO_ROOT / "references" / "collection-columns.md"
+        if not reference.exists():
+            self.skipTest("collection-columns.md is generated when the Skill is rendered")
+        text = reference.read_text(encoding="utf-8")
+        for name in ("relationships", "pipeline_steps", "rules", "fields"):
+            self.assertIn(f"## `{name}`", text)
+        self.assertIn("`Parent Table Name`", text)
+        self.assertIn("`Relationship Side`", text)
+
+
 class TestOlderSchemaVersion(AnalyzerTestCase):
     fixture = "v012-qbl.yaml"
     table_schema = None

@@ -37,7 +37,16 @@ python3 scripts/qbl_analyzer.py query <output-dir> <collection> \
 
 Repeat `--where` to AND conditions. Add `--distinct` to collapse duplicate projected rows, `--count` for counts only, `--limit -1` for everything, and `--format json` or `--format csv` when you need to post-process.
 
-Column and collection names are matched case-insensitively, and an unknown name returns the valid list — so a wrong guess costs one command, not a dead end.
+Column and collection names are matched case-insensitively but never abbreviated, and an unknown name returns the closest matches and the valid list. **Do not guess column names**: `references/collection-columns.md` lists the exact columns of every collection. The ones most often guessed wrong:
+
+| Collection | Guess | Actual column |
+|---|---|---|
+| `relationships` | `Parent Table`, `Child Table` | `Parent Table Name`, `Child Table Name` |
+| `relationships` | `Reference Field` | `Reference Field Name` |
+| `pipeline_steps` | `Selector`, `Action` | `Channel Selector`, `Step SubType` |
+| `pipeline_steps` | `Table` | `Table Name` (the step's table, its target's for an update) |
+| `fields` | `Label`, `Type` | `Field Label`, `Field Type` |
+| `rules` | `Name`, `Conditions` | `Rule Name`, `Rule Summary` |
 
 ## Question patterns
 
@@ -92,14 +101,19 @@ python3 scripts/qbl_analyzer.py query <dir> pipeline_steps --where "HTTP URL!=" 
 
 Add `connected_tables` and `external_resources` for non-pipeline integrations.
 
-### "What does this pipeline actually do?"
+### "What does this pipeline actually do?" / "What's risky about it?"
+
+The digest already lists, for every pipeline, its schedule and timezone, each step's selector and table, its filter, the fields a trigger watches, and what each step sets. Read that first. For the full values:
 
 ```bash
+python3 scripts/qbl_analyzer.py query <dir> pipelines --columns "Pipeline Name,Trigger,Schedule,Schedule Timezone,Description,Owner"
 python3 scripts/qbl_analyzer.py query <dir> pipeline_steps --where "Pipeline Logical ID=$Pipeline_X" \
-  --columns "Step ID,Step Name,Step Type,Step SubType,Channel Resource,HTTP Method,HTTP URL,HTTP Body,Referenced Tables,Referenced Fields"
+  --columns "Step ID,Step Name,Step Type,Step Depth,Channel Selector,Table Name,Target Step ID,Filters,Trigger Fields,Input Mappings,HTTP Method,HTTP URL"
 ```
 
-Step order follows `Step ID`. `Step Type` distinguishes a plain step from an `if statement` or `loop`, so you can reconstruct control flow.
+Rows are in step order. `Step Type` distinguishes a plain step from an `if statement` or `loop`, and `Step Depth` says how deeply a step is nested, so you can reconstruct control flow. `Filters` is the step's condition as written (`status equals "Completed"`); `Input Mappings` is what it writes, `Field = value` pairs separated by `; `. An update inside a loop names no table of its own: `Target Step ID` names the search whose record it updates, and `Table Name` is that search's table (`Table Source` says `Target step`).
+
+Questions worth asking of each pipeline: does a scheduled one check for work it already did (a filter that would stop a duplicate)? Does a record trigger fire on any change (`Trigger On All Fields=Yes`) or only on named fields? Does a filter test a choice value that a rename would silently break?
 
 ### "Which pipelines read or write this table?"
 
@@ -108,7 +122,26 @@ python3 scripts/qbl_analyzer.py query <dir> pipeline_table_matrix --where "Table
   --columns "Pipeline Name,Step Name,Reference Context" --distinct
 ```
 
-`Reference Context` tells you *how* the table was referenced — a native step data source, an HTTP body field, or a URL parameter. That distinction usually decides whether it is a read or a write.
+`Reference Context` tells you *how* the table was referenced — a native step data source, a step target (`Reference Type=Target Step`, an update of a record an earlier search found), an HTTP body field, or a URL parameter. Whether a step reads or writes is its `Channel Selector` in `pipeline_steps`: `create`, `update`, `upsert` and `delete` write; `search` and the `on_*` triggers read.
+
+### "How are the tables related?"
+
+The digest lists each relationship once. The `relationships` collection has **two rows per relationship**, because the export writes each one on both of its tables; `Relationship Side` says which half a row is, and `Counterpart Relationship Logical ID` names the other half. Count or list on one side:
+
+```bash
+python3 scripts/qbl_analyzer.py query <dir> relationships --where "Relationship Side=Child" \
+  --columns "Parent Table Name,Child Table Name,Reference Field Name,Total Reference Fields"
+```
+
+The manifest's `relationship_count` is the number of relationships; `entity_counts.relationships` is the number of rows.
+
+### "What do the form rules do?"
+
+```bash
+python3 scripts/qbl_analyzer.py query <dir> rules --columns "Table Name,Form Name,Rule Name,Enabled,Rule Summary,Condition Fields,Action Fields"
+```
+
+`Rule Summary` reads `When Status IsEqualTo "New" -> Hide Resolution Notes`. Condition groups are read through, so a field a rule tests is in `Condition Fields` and marked `Used in Form Rules` in `fields`.
 
 ### "Who can see or edit what?"
 
