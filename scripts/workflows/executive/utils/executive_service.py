@@ -3,6 +3,7 @@ from collections import defaultdict
 from typing import Dict, Any, List
 
 from qblparser import VALIDATE_ALL, parse_qbl_data, remediation_for
+from qblparser.utils.parameters import resolve_document
 from utils.helpers import SafeExtractor
 from qbl_index import build_parser_index
 
@@ -244,8 +245,14 @@ class ExecutiveSummaryService:
 
     def _extract_additional_metadata(self, qbl_data: Dict[str, Any]) -> Dict[str, Any]:
         """Collect supplemental datasets outside the parsed collections."""
+        # Everything but the definitions themselves is read with `!Var`
+        # resolved. An export parameterises the app name, pipeline account ids
+        # and more; read raw, the app's name came out as {'Name': 'App_Name_1'}.
+        # The definitions stay raw: listing them is the point of that dataset.
+        raw_qbl_data = qbl_data
+        qbl_data = resolve_document(qbl_data)
         additional = {
-            "parameter_definitions": self._parse_parameter_definitions(qbl_data),
+            "parameter_definitions": self._parse_parameter_definitions(raw_qbl_data),
             "application_settings": self._parse_application_settings(qbl_data),
             "application_variables": self._parse_application_variables(qbl_data),
             "external_resources": [],
