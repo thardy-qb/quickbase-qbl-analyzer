@@ -618,5 +618,52 @@ class TestOlderSchemaVersion(AnalyzerTestCase):
         self.assertTrue(self.manifest["success"])
 
 
+class TestOutputDirectorySafety(unittest.TestCase):
+    """The output directory is cleared on every run, so only the analyzer's own."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="qbl-outdir-"))
+        self.qbl = self.root / "export.qbl.yaml"
+        shutil.copy(FIXTURES / "solution-qbl.yaml", self.qbl)
+        (self.root / "notes.txt").write_text("keep me", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def summary(self, output_dir: Path) -> subprocess.CompletedProcess:
+        return run_cli("summary", str(self.qbl), "--output-dir", str(output_dir), "--label", "T")
+
+    def test_refuses_the_folder_holding_the_input(self) -> None:
+        result = self.summary(self.root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("contains the input file", result.stdout + result.stderr)
+        self.assertTrue(self.qbl.is_file())
+        self.assertTrue((self.root / "notes.txt").is_file())
+
+    def test_refuses_a_folder_with_other_files(self) -> None:
+        other = self.root / "downloads"
+        other.mkdir()
+        (other / "report.pdf").write_text("not ours", encoding="utf-8")
+        result = self.summary(other)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not write", result.stdout + result.stderr)
+        self.assertTrue((other / "report.pdf").is_file())
+
+    def test_reruns_clear_only_the_previous_output(self) -> None:
+        out = self.root / "qbl-analysis"
+        self.assertEqual(self.summary(out).returncode, 0)
+        self.assertTrue((out / ".qbl-analyzer-output").is_file())
+        (out / "stale.txt").write_text("from an earlier run", encoding="utf-8")
+        self.assertEqual(self.summary(out).returncode, 0)
+        self.assertFalse((out / "stale.txt").exists())
+        self.assertTrue((out / "solution-digest.md").is_file())
+
+    def test_reruns_over_output_from_before_the_marker(self) -> None:
+        out = self.root / "qbl-analysis"
+        self.assertEqual(self.summary(out).returncode, 0)
+        (out / ".qbl-analyzer-output").unlink()
+        self.assertEqual(self.summary(out).returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
