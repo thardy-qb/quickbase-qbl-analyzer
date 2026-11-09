@@ -132,15 +132,75 @@ def validate_input(path: Optional[Path], label: str) -> Optional[Path]:
     return resolved
 
 
-def prepare_output_dir(path: Path) -> Path:
-    """Create an isolated output directory and remove stale prior-run artifacts."""
+OUTPUT_MARKER = ".qbl-analyzer-output"
+
+# Everything the analyzer itself writes into an output directory. A folder
+# that holds only these names is a previous run's output and is safe to clear,
+# even when it predates OUTPUT_MARKER.
+KNOWN_ARTIFACTS = frozenset(
+    {
+        OUTPUT_MARKER,
+        "csv",
+        "deployment-changes.json",
+        "deployment-overview.xlsx",
+        "deployment-summary.md",
+        "manifest.json",
+        "parsed-qbl.json",
+        "qbl-deployment-overview.zip",
+        "qbl-solution-overview.zip",
+        "solution-digest.md",
+        "solution-overview.xlsx",
+        "solution-summary.md",
+    }
+)
+
+
+def _is_within(path: Path, folder: Path) -> bool:
+    try:
+        path.relative_to(folder)
+    except ValueError:
+        return False
+    return True
+
+
+def prepare_output_dir(path: Path, inputs: Iterable[Optional[Path]] = ()) -> Path:
+    """Create the output directory, clearing it only when it is the analyzer's own.
+
+    The directory is cleared of a previous run's artifacts so stale files never
+    mix with new ones. It is never cleared when it holds anything else: a
+    folder such as Desktop or Downloads, or the folder the QBL file sits in,
+    is refused rather than emptied.
+    """
     output_dir = path.expanduser().resolve()
+    for source in inputs:
+        if source is not None and _is_within(source.resolve(), output_dir):
+            raise ValueError(
+                f"The output directory {output_dir} contains the input file "
+                f"{source.name}. Choose a new folder for the output, such as "
+                f"{output_dir / 'qbl-analysis'}."
+            )
+    if output_dir.exists() and not output_dir.is_dir():
+        raise ValueError(f"The output path {output_dir} is a file, not a folder.")
     output_dir.mkdir(parents=True, exist_ok=True)
-    for child in output_dir.iterdir():
-        if child.is_dir():
+    children = list(output_dir.iterdir())
+    owned = (output_dir / OUTPUT_MARKER).is_file() or all(
+        child.name in KNOWN_ARTIFACTS for child in children
+    )
+    if not owned:
+        raise ValueError(
+            f"The output directory {output_dir} already holds files the analyzer "
+            "did not write, so it will not be cleared. Choose a new or empty "
+            f"folder, such as {output_dir / 'qbl-analysis'}."
+        )
+    for child in children:
+        if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child)
         else:
             child.unlink()
+    (output_dir / OUTPUT_MARKER).write_text(
+        "Written by the QBL analyzer. This folder is cleared on every run.\n",
+        encoding="utf-8",
+    )
     return output_dir
 
 
@@ -207,7 +267,7 @@ def build_zip(output_dir: Path, zip_name: str) -> Path:
         bundle_path.unlink()
     with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(output_dir.rglob("*")):
-            if path.is_file() and path != bundle_path:
+            if path.is_file() and path != bundle_path and path.name != OUTPUT_MARKER:
                 archive.write(path, path.relative_to(output_dir))
     return bundle_path
 
@@ -430,7 +490,7 @@ def write_solution_summary(
 def run_summary(args: argparse.Namespace) -> Dict[str, Any]:
     qbl_file = validate_input(args.qbl_file, "QBL file")
     table_schema_file = validate_input(args.table_schema, "Table schema file")
-    output_dir = prepare_output_dir(args.output_dir)
+    output_dir = prepare_output_dir(args.output_dir, (qbl_file, table_schema_file))
 
     qbl_data = load_qbl_file(qbl_file)
     qbl_version = detect_qbl_version(qbl_data)

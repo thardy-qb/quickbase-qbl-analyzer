@@ -39,6 +39,8 @@ Add `--table-schema "<file>"` when one was supplied.
 
 This writes the queryable inventory and every artifact. Run it once per solution and reuse the output directory for the rest of the conversation. Do not re-parse to answer a follow-up question.
 
+Use a new folder for `--output-dir`, such as `qbl-analysis` beside the export, never the folder the export sits in. The analyzer clears its output folder on every run, so it refuses a folder that holds the input or any files it did not write.
+
 ### 2. Read the digest
 
 Read `solution-digest.md` in full. It covers the architecture, the integration surface, logic and automation counts, validation findings, and quality signals, and it is usually enough on its own to answer "what does this application do?"
