@@ -454,6 +454,72 @@ class TestNoCredentialNoise(AnalyzerTestCase):
         self.assertNotIn("Possible hardcoded credentials", digest)
 
 
+class TestExportedShapes(unittest.TestCase):
+    """Shapes Quickbase writes into its own exports must not read as defects.
+
+    The fixture is a cut-down export: the app's name is a `!Var` resolved from
+    `ParameterDefinitions`, a legacy form section carries the
+    `NonFieldElementID: 0` the platform writes, and a custom email has no
+    `SendOptions`, which the platform's export drops.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.output_dir = Path(tempfile.mkdtemp(prefix="qbl-export-"))
+        cls.source = FIXTURES / "exported-shapes-qbl.yaml"
+        result = run_cli("summary", str(cls.source), "--output-dir", str(cls.output_dir))
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        cls.manifest = json.loads(result.stdout)
+        cls.digest = Path(cls.manifest["outputs"]["digest"]).read_text(encoding="utf-8")
+        cls.parsed = json.loads(Path(cls.manifest["outputs"]["json"]).read_text(encoding="utf-8"))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.output_dir, ignore_errors=True)
+
+    def _issues(self):
+        return self.parsed.get("issues", [])
+
+    def test_the_app_name_is_resolved_in_the_digest_heading(self):
+        self.assertIn("### Reading List (`$App_Reading`)", self.digest)
+        self.assertNotIn("App_Name_1'}", self.digest)
+
+    def test_the_app_name_is_resolved_in_application_settings(self):
+        out = run_cli("query", str(self.output_dir), "application_settings",
+                      "--format", "json", "--limit", "-1")
+        rows = json.loads(out.stdout)["rows"]
+        self.assertEqual(["Reading List"], [r["App Name"] for r in rows])
+
+    def test_the_parameter_definitions_still_list_the_definition(self):
+        out = run_cli("query", str(self.output_dir), "parameter_definitions",
+                      "--format", "json", "--limit", "-1")
+        rows = json.loads(out.stdout)["rows"]
+        self.assertEqual(["App_Name_1"], [r["Parameter Logical ID"] for r in rows])
+
+    def test_a_trailing_parameters_document_overrides_the_default(self):
+        with tempfile.TemporaryDirectory(prefix="qbl-export-override-") as tmp:
+            stream = Path(tmp) / "two-document.yaml"
+            stream.write_text(
+                self.source.read_text(encoding="utf-8")
+                + "---\nParameters:\n  App_Name_1: Reading List Archive\n",
+                encoding="utf-8",
+            )
+            result = run_cli("summary", str(stream), "--output-dir", str(Path(tmp) / "out"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            digest = Path(json.loads(result.stdout)["outputs"]["digest"]).read_text(encoding="utf-8")
+        self.assertIn("### Reading List Archive (`$App_Reading`)", digest)
+
+    def test_the_section_element_id_is_not_reported(self):
+        self.assertEqual(
+            [], [i for i in self._issues() if "NonFieldElementID" in str(i.get("Problem", ""))])
+
+    def test_the_missing_send_options_is_a_warning(self):
+        found = [(i.get("Code"), i.get("Severity")) for i in self._issues()
+                 if "SendOptions" in str(i.get("Problem", ""))]
+        self.assertEqual([("SCH012", "warning")], found)
+
+
 class TestOlderSchemaVersion(AnalyzerTestCase):
     fixture = "v012-qbl.yaml"
     table_schema = None
