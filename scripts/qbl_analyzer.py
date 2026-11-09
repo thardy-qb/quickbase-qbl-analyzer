@@ -30,6 +30,7 @@ from qblparser import (  # noqa: E402
     load_qbl_file,
     load_table_schema_file,
 )
+from qblparser.entities.relationships import distinct_relationships  # noqa: E402
 
 from digest_writer import write_digest  # noqa: E402
 from query_engine import (  # noqa: E402
@@ -386,6 +387,17 @@ def write_solution_summary(
     for key in sorted(k for k in counts if k not in key_order and counts[k]):
         lines.append(f"| `{key}` | {counts[key]} |")
 
+    relationship_rows = parsed_data.get("relationships") or []
+    distinct = len(distinct_relationships(relationship_rows))
+    if distinct != len(relationship_rows):
+        lines.extend(
+            [
+                "",
+                f"`relationships` has one row per side of each relationship: "
+                f"{distinct} relationships in all.",
+            ]
+        )
+
     lines.extend(
         [
             "",
@@ -490,6 +502,9 @@ def run_summary(args: argparse.Namespace) -> Dict[str, Any]:
         "source_file": str(qbl_file),
         "qbl_version": qbl_version,
         "entity_counts": solution_counts(parsed_data),
+        # `entity_counts.relationships` counts rows, and the export writes each
+        # relationship on both of its tables. This is the number to report.
+        "relationship_count": len(distinct_relationships(parsed_data.get("relationships") or [])),
         "warning_count": len(warnings),
         "validation_issue_count": len(issues),
         "validation_error_count": breakdown["errors"],

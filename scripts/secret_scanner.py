@@ -24,7 +24,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 SCAN_TARGETS: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
     (
         "pipeline_steps",
-        ("HTTP URL", "HTTP Body", "Channel Selector"),
+        ("HTTP URL", "HTTP Body", "Channel Selector", "Input Mappings", "Filters"),
         ("Pipeline Name", "Step Name", "Step ID"),
     ),
     ("application_variables", ("Value",), ("App Logical ID", "Name")),

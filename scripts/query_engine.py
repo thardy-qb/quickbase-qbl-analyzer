@@ -9,6 +9,7 @@ the solution.
 from __future__ import annotations
 
 import csv
+import difflib
 import io
 import json
 import re
@@ -96,8 +97,36 @@ def resolve_column(requested: str, available: Sequence[str]) -> str:
         if name.strip().casefold() == wanted:
             return name
     raise QueryError(
-        f"Unknown column {requested!r}. Available columns: {', '.join(available)}"
+        f"Unknown column {requested!r}.{_suggestion(requested, available)} "
+        f"Available columns: {', '.join(available)}"
     )
+
+
+def _suggestion(requested: str, available: Sequence[str]) -> str:
+    """` Did you mean ...?` for the likeliest intended columns, or "".
+
+    A guessed name is usually a shortened real one - `Parent Table` for
+    `Parent Table Name` - so columns that start with or contain the guess come
+    first, then close spellings.
+    """
+    wanted = requested.strip().casefold()
+    if not wanted:
+        return ""
+    folded = {name.casefold(): name for name in available}
+    candidates: List[str] = []
+    for key, name in folded.items():
+        if key.startswith(wanted + " ") or key.startswith(wanted):
+            candidates.append(name)
+    for key, name in folded.items():
+        if wanted in key and name not in candidates:
+            candidates.append(name)
+    for key in difflib.get_close_matches(wanted, list(folded), n=3, cutoff=0.6):
+        if folded[key] not in candidates:
+            candidates.append(folded[key])
+    if not candidates:
+        return ""
+    shown = ", ".join(f"'{name}'" for name in candidates[:4])
+    return f" Did you mean {shown}?"
 
 
 def _as_number(value: Any) -> Optional[float]:

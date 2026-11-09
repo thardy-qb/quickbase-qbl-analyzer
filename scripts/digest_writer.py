@@ -17,7 +17,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from secret_scanner import render_section, scan_parsed_data
+from secret_scanner import render_section, scan_parsed_data, scan_text
+
+from qblparser.entities.relationships import distinct_relationships
 
 # Structural inventories are listed in full. Quickbase does not limit how many
 # tables, relationships, roles, or pipelines a solution may have, so truncating
@@ -141,20 +143,39 @@ def _architecture(lines: List[str], data: Dict[str, Any]) -> None:
         )
         lines.append("")
 
-    relationships = _rows(data, "relationships")
+    relationship_rows = _rows(data, "relationships")
+    relationships = distinct_relationships(relationship_rows)
     if relationships:
         lines.extend([f"### Relationships ({len(relationships)})", ""])
+        if len(relationship_rows) != len(relationships):
+            lines.extend(
+                [
+                    "The export writes each relationship on both of its tables, so the",
+                    f"`relationships` collection has {len(relationship_rows)} rows, one per side. Each is",
+                    "listed once here; filter on `Relationship Side=Child` to do the same.",
+                    "",
+                ]
+            )
         entries = []
         for row in relationships:
             parent = _text(row, "Parent Table Name", "Parent Table Logical ID", default="?")
             child = _text(row, "Child Table Name", "Child Table Logical ID", default="?")
             logical = _text(row, "Relationship Logical ID")
+            counterpart = _text(row, "Counterpart Relationship Logical ID")
+            ref_field = _text(row, "Reference Field Name")
             ref_count = _text(row, "Total Reference Fields", default="0")
             cross = " [cross-app]" if _is_yes(row, "Cross App") else ""
-            detail = f"`{logical}`" if logical else ""
+            details = []
+            if ref_field:
+                details.append(f"via {ref_field}")
+            if logical:
+                ids = f"`{logical}`"
+                if counterpart and counterpart != logical:
+                    ids += f" / parent side `{counterpart}`"
+                details.append(ids)
             if ref_count and ref_count != "0":
-                detail += (", " if detail else "") + _plural(int(ref_count), "referencing field")
-            entries.append(f"{parent} -> {child}" + (f" ({detail})" if detail else "") + cross)
+                details.append(_plural(int(ref_count), "referencing field"))
+            entries.append(f"{parent} -> {child}" + (f" ({'; '.join(details)})" if details else "") + cross)
         _capped(lines, entries, CAP_RELATIONSHIPS, "query the `relationships` collection")
         lines.append("")
 
@@ -176,6 +197,84 @@ def _architecture(lines: List[str], data: Dict[str, Any]) -> None:
             entries.append(f"{name}" + (f" ({', '.join(flags)})" if flags else ""))
         _capped(lines, entries, CAP_ROLES, "query the `roles` collection")
         lines.append("")
+
+
+# One input value in the digest is cut here; the full value is in
+# `pipeline_steps.Input Mappings`. Long templates (an email body, a JSON
+# payload) would otherwise dominate the section.
+INPUT_VALUE_LIMIT = 80
+
+
+def _short(text: str, limit: int = INPUT_VALUE_LIMIT) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _safe(text: str) -> str:
+    """The value, or a placeholder when the credential scanner flags it.
+
+    The digest is the file most likely to be pasted somewhere, so a value that
+    looks like a secret is withheld here and reported in the credentials
+    section instead.
+    """
+    return "[possible credential withheld]" if scan_text(text) else text
+
+
+def _pipeline_detail(row: Dict[str, Any], steps: List[Dict[str, Any]]) -> List[str]:
+    """How one pipeline runs: its start, then one line per step.
+
+    Without this a risk question ("what if this runs twice?", "what does it
+    write?") could only be answered from the raw export: the digest named the
+    tables a pipeline touches but not its schedule, its filters, or its inputs.
+    """
+    lines: List[str] = []
+    description = _text(row, "Description")
+    if description:
+        lines.append(f"  - Purpose: {_short(description, 200)}")
+    schedule = _text(row, "Schedule")
+    if schedule:
+        zone = _text(row, "Schedule Timezone")
+        lines.append(f"  - Runs on schedule `{schedule}`" + (f" ({zone})" if zone else " (no timezone stated)"))
+
+    for step in steps:
+        indent = "  " * (int(_text(step, "Step Depth", default="0") or 0) + 1)
+        step_id = _text(step, "Step ID")
+        selector = _text(step, "Channel Selector")
+        table = _text(step, "Table Name")
+        if _text(step, "Step Type") == "loop":
+            target = _text(step, "Target Step ID")
+            lines.append(f"{indent}- loop over the records of step `{target}`" if target else f"{indent}- loop")
+            continue
+        if _text(step, "Step Type") == "if statement":
+            lines.append(f"{indent}- if: {_text(step, 'Step Name', default='condition')}")
+            continue
+        head = " ".join(part for part in (f"`{step_id}`" if step_id else "", selector, table) if part)
+        if not head:
+            head = _text(step, "Step Name", default="step")
+        parts = [head]
+        target = _text(step, "Target Step ID")
+        if target and _text(step, "Table Source") == "Target step":
+            parts.append(f"the record step `{target}` found")
+        filters = _text(step, "Filters")
+        if filters:
+            parts.append(f"where {_safe(_short(filters, 160))}")
+        trigger_fields = _text(step, "Trigger Fields")
+        if trigger_fields:
+            parts.append(f"when {trigger_fields} changes")
+        elif _text(step, "Trigger On All Fields") == "Yes":
+            parts.append("when any field changes")
+        mappings = _text(step, "Input Mappings")
+        if mappings:
+            rendered = []
+            for mapping in mappings.split("; "):
+                name, _, value = mapping.partition(" = ")
+                rendered.append(f"{name} = {_safe(_short(value))}" if value else _short(name))
+            parts.append("sets " + "; ".join(rendered))
+        url = _text(step, "HTTP URL")
+        if url:
+            parts.append(f"{_text(step, 'HTTP Method', default='?')} {_safe(url)}")
+        lines.append(f"{indent}- " + " -- ".join(parts))
+    return lines
 
 
 def _integration_surface(lines: List[str], data: Dict[str, Any]) -> None:
@@ -226,9 +325,20 @@ def _integration_surface(lines: List[str], data: Dict[str, Any]) -> None:
             touched_fields = sorted(fields_by_pipeline.get(key, ()))
             if touched_fields:
                 entry.append(f"fields: {', '.join(touched_fields)}")
-            blocks.append("; ".join(entry))
+            block = "; ".join(entry)
+            detail = _pipeline_detail(row, own_steps)
+            if detail:
+                block += "\n" + "\n".join(detail)
+            blocks.append(block)
         _capped(lines, blocks, CAP_PIPELINES, "query the `pipelines` collection")
-        lines.append("")
+        lines.extend(
+            [
+                "",
+                "Step lines read `id selector table`: filters as the step states them, and",
+                "`sets` for what it writes. Query `pipeline_steps` for the full values.",
+                "",
+            ]
+        )
 
     endpoints = []
     for row in steps:
@@ -304,6 +414,23 @@ def _logic_and_automation(lines: List[str], data: Dict[str, Any]) -> None:
             "",
         ]
     )
+
+    rules = _rows(data, "rules")
+    if rules:
+        lines.extend([f"### Form rules ({len(rules)})", ""])
+        entries = []
+        for row in rules:
+            where = " / ".join(
+                part for part in (_text(row, "Table Name"), _text(row, "Form Name")) if part
+            )
+            name = _text(row, "Rule Name", "Rule ID", default="?")
+            disabled = "" if _is_yes(row, "Enabled") or not _text(row, "Enabled") else " [disabled]"
+            summary = _text(row, "Rule Summary")
+            entries.append(
+                f"{where}: **{name}**{disabled}" + (f" -- {_short(summary, 240)}" if summary else "")
+            )
+        _capped(lines, entries, CAP_GENERIC, "query the `rules` collection")
+        lines.append("")
 
 
 def _cross_reference_sources(data: Dict[str, Any]) -> Dict[str, set]:

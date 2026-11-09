@@ -57,11 +57,13 @@ Only matching rows are printed, so the cost scales with the answer rather than t
 
 **Do not read `parsed-qbl.json` directly** unless the solution is small. It runs 7-12x the size of the source QBL — on a large realm that is tens of megabytes. Query it instead.
 
-`references/analysis-guide.md` maps common questions to concrete commands. Consult it before improvising a query.
+`references/analysis-guide.md` maps common questions to concrete commands. Consult it before improvising a query. Take column names from `references/collection-columns.md` or the `collections` output rather than guessing them: names match case-insensitively but are never abbreviated.
+
+The `relationships` collection has one row per side of each relationship. Report the manifest's `relationship_count`, or the digest's heading, not the row count.
 
 ### 4. Report
 
-When reporting validation findings, keep errors and warnings apart. The manifest gives both as `validation_error_count` and `validation_warning_count`, and `validation_by_layer` says which layer found what. Errors are what Quickbase rejects; warnings are pre-existing configuration debt, most often a `!BadRef` the platform itself wrote into the export. Reporting one combined total makes a healthy application look broken.
+When reporting validation findings, keep errors and warnings apart. The manifest gives both as `validation_error_count` and `validation_warning_count`, and `validation_by_layer` says which layer found what. Errors are what Quickbase rejects; warnings are pre-existing configuration debt, most often a `!BadRef` the platform itself wrote into the export. Reporting one combined total makes a healthy application look broken. If the user means to create a copy from this export (a dev or test app), two things stop it re-importing as written: each `SCH012` property, and every pipeline whose `Name` is `!Var`, which makes Quickbase's validation answer HTTP 500 with no findings. Writing each pipeline name as its parameter's value fixes the second; the first, on a custom email, usually means the source app's email has no trigger events - set them there and export again, or restore `SendOptions` with its `RecordEventTrigger` by hand.
 
 Give the fix each finding carries rather than improvising one — for several codes the obvious response is the wrong one. An unrecognised resource type, for instance, is skipped by Quickbase with a warning rather than rejected, so the object is simply missing and the fix is correcting the type name, not adding properties. `references/output-guide.md` lists the layers and what each one checks.
 
