@@ -1,0 +1,42 @@
+Solution:
+  Version: 0.14
+Resources:
+  $App_X:
+    Type: QB::Application
+    Properties:
+      Name: Pipeline Only Test
+    Tables:
+      $Table_T:
+        Type: QB::Table
+        Properties:
+          Name: Orders
+          AliasHint: _DBID_ORDERS
+        Fields:
+          $Field_OnlyPipeline:
+            Id: 6
+            Type: QB::Field::Text
+            Properties:
+              Label: Sync Token
+          $Field_Nowhere:
+            Id: 7
+            Type: QB::Field::Text
+            Properties:
+              Label: Truly Orphaned
+  $Pipeline_Sync:
+    Type: QB::Pipeline
+    Properties:
+      Name: Token Sync
+    Steps:
+      - Properties:
+          Id: s0
+          Name: Read Token
+          Type: pipe
+          SubType: quickbase.query_records
+          Channel:
+            Resource: quickbase
+          InputsMeta:
+            source:
+              Table:
+                Table: $Table_T
+              Fields:
+                - Field: $Field_OnlyPipeline

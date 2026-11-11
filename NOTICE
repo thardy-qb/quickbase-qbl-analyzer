@@ -1,0 +1,30 @@
+Quickbase QBL Solution Analyzer
+Copyright (c) 2026 Quickbase, Inc.
+
+Licensed under the MIT License. See LICENSE.
+
+Third-party components
+
+This Skill bundles PyYAML and XlsxWriter under scripts/vendor/ so that it runs
+without installing anything.
+
+PyYAML 6.0.3 -- MIT License
+https://github.com/yaml/pyyaml
+Full text: references/licenses/PYYAML_LICENSE.txt
+
+Modified from the original distribution: the file cyaml.py is removed. It
+binds the optional libyaml C extension, which is not bundled. PyYAML's
+__init__.py already handles the missing import and uses the pure-Python
+parser. All other PyYAML files are unmodified.
+
+XlsxWriter 3.2.9 -- BSD 2-Clause License
+https://github.com/jmcnamara/XlsxWriter
+Full text: references/licenses/XLSXWRITER_LICENSE.txt
+
+Modified from the original distribution: the chart and chartsheet modules
+are removed, because this Skill writes tabular sheets only. In
+workbook.py and worksheet.py, Workbook.add_chart, Workbook.add_chartsheet and
+Worksheet.insert_chart raise NotImplementedError, and one
+isinstance(worksheet, Chartsheet) test is replaced by a read of the
+worksheet's is_chartsheet attribute. Cell, format and file-writing behaviour
+is unchanged. Modules not imported by this Skill are also removed.

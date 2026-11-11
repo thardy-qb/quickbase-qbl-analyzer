@@ -1,0 +1,332 @@
+Version: 0.15
+Resources:
+  $App_Lending_Library:
+    Type: QB::Application
+    Properties:
+      Name: Lending Library
+    Tables:
+      $Table_Branches:
+        Type: QB::Table
+        Properties:
+          Name: Branches
+          AliasHint: _DBID_BRANCHES
+        Fields:
+          $Field_Record_ID:
+            Type: QB::Field::RecordId
+            Id: 3
+            Properties:
+              Label: Record ID#
+          $Field_Branch_Name:
+            Type: QB::Field::Text
+            Id: 6
+            Properties:
+              Label: Branch Name
+        Relationships:
+          $Relationship_to_Books_1:
+            Type: QB::Relationship::Parent
+      $Table_Books:
+        Type: QB::Table
+        Properties:
+          Name: Books
+          AliasHint: _DBID_BOOKS
+        Fields:
+          $Field_Record_ID:
+            Type: QB::Field::RecordId
+            Id: 3
+            Properties:
+              Label: Record ID#
+          $Field_Title:
+            Type: QB::Field::Text
+            Id: 6
+            Properties:
+              Label: Title
+          $Field_Related_Branch:
+            Type: QB::Field::Reference
+            Id: 7
+            Properties:
+              Label: Related Branch
+              Reference:
+                Relationship: !Ref
+                  Relationship: $Relationship_to_Books
+                DisplayType: QB::Field::Number
+          $Field_Is_Overdue:
+            Type: QB::Field::Checkbox
+            Id: 8
+            Properties:
+              Label: Is Overdue
+          $Field_Last_Returned:
+            Type: QB::Field::Date
+            Id: 9
+            Properties:
+              Label: Last Returned
+        Relationships:
+          $Relationship_to_Books:
+            Type: QB::Relationship::Child
+            Properties:
+              Parent: !Ref
+                Table: $Table_Branches
+                Relationship: $Relationship_to_Books_1
+          $Relationship_to_Loans_1:
+            Type: QB::Relationship::Parent
+      $Table_Loans:
+        Type: QB::Table
+        Properties:
+          Name: Loans
+          AliasHint: _DBID_LOANS
+        Fields:
+          $Field_Record_ID:
+            Type: QB::Field::RecordId
+            Id: 3
+            Properties:
+              Label: Record ID#
+          $Field_Related_Book:
+            Type: QB::Field::Reference
+            Id: 6
+            Properties:
+              Label: Related Book
+              Reference:
+                Relationship: !Ref
+                  Relationship: $Relationship_to_Loans
+                DisplayType: QB::Field::Number
+          $Field_Loan_Status:
+            Type: QB::Field::TextMultipleChoice
+            Id: 7
+            Properties:
+              Label: Loan Status
+          $Field_Returned_On:
+            Type: QB::Field::Date
+            Id: 8
+            Properties:
+              Label: Returned On
+          $Field_Return_Notes:
+            Type: QB::Field::TextMultiLine
+            Id: 9
+            Properties:
+              Label: Return Notes
+          $Field_Borrower_Note:
+            Type: QB::Field::Text
+            Id: 10
+            Properties:
+              Label: Borrower Note
+        Relationships:
+          $Relationship_to_Loans:
+            Type: QB::Relationship::Child
+            Properties:
+              Parent: !Ref
+                Table: $Table_Books
+                Relationship: $Relationship_to_Loans_1
+        Forms:
+          Resources:
+            $FormV2_Loan_Form:
+              Type: QB::FormV2
+              Id: 10
+              Properties:
+                Name: Loan Form
+              Rules:
+                $FormV2Rule_Hide_notes_while_open:
+                  Type: QB::FormV2::Rule
+                  Properties:
+                    Name: Hide notes while open
+                    Disabled: false
+                    RunOn: RecordOpenSaveOrChange
+                  When:
+                    - Type: QB::FormV2::Rule::Condition::Group
+                      When:
+                        - Type: QB::FormV2::Rule::Condition::Field
+                          Properties:
+                            Field: !Ref
+                              Field: $Field_Loan_Status
+                            Comparison: IsEqualTo
+                            Value: Open
+                  Actions:
+                    - Type: QB::FormV2::Rule::Action::Hide
+                      Properties:
+                        Target: !Ref
+                          Field: $Field_Return_Notes
+                $FormV2Rule_Flag_either_note:
+                  Type: QB::FormV2::Rule
+                  Properties:
+                    Name: Flag either note
+                    Disabled: true
+                  When:
+                    - Type: QB::FormV2::Rule::Condition::Group
+                      Properties:
+                        TrueWhen: Any
+                      When:
+                        - Type: QB::FormV2::Rule::Condition::Field
+                          Properties:
+                            Field: !Ref
+                              Field: $Field_Borrower_Note
+                            Comparison: Contains
+                            Value: damaged
+                        - Type: QB::FormV2::Rule::Condition::Field
+                          Properties:
+                            Field: !Ref
+                              Field: $Field_Returned_On
+                            Comparison: IsEqualTo
+                            Value: ""
+                  Actions:
+                    - Type: QB::FormV2::Rule::Action::Require
+                      Properties:
+                        Target: !Ref
+                          Field: $Field_Return_Notes
+  $Pipeline_Nightly_overdue_check:
+    Type: QB::Pipeline
+    Properties:
+      Name: Nightly overdue check
+      Description: Each night, notes every overdue book.
+      Crontab: 0 2 * * *
+      CrontabTimezone: Europe/Dublin
+      Owner: owner@example.com
+    Steps:
+      - Type: QB::PipelineStep::Quickbase
+        Properties:
+          Id: a
+          Type: pipe
+          Name: Find overdue books
+          SubType: query
+          Channel:
+            Resource: record
+            Id: quickbase
+            Selector: search
+          Filters:
+            Type: composite-expression
+            Notation: postfix
+            Expression:
+              - Type: relational-expression
+                Field: is_overdue
+                Operator: is
+                Value: true
+              - Type: relational-expression
+                Field: title
+                Operator: contains
+                Value: Atlas
+              - Type: logical-operator
+                Operator: OR
+        InputsMeta:
+          $PipelineStep_InputsMeta_a:
+            Type: QB::PipelineStep::InputsMeta
+            PipelineStep_DataSources:
+              $PipelineStep_DataSource_2:
+                Type: QB::PipelineStep::DataSource::Fields
+                Properties:
+                  Fields:
+                    - !Ref
+                      App: $App_Lending_Library
+                      Table: $Table_Books
+                      Field: $Field_Is_Overdue
+                  Name: export_fields
+              $PipelineStep_DataSource_3:
+                Type: QB::PipelineStep::DataSource::Table
+                Properties:
+                  Table: !Ref
+                    App: $App_Lending_Library
+                    Table: $Table_Books
+                  Name: table
+  $Pipeline_Stamp_book_on_return:
+    Type: QB::Pipeline
+    Properties:
+      Name: Stamp book on return
+      Owner: owner@example.com
+    Steps:
+      - Type: QB::PipelineStep::Quickbase
+        Properties:
+          Id: a
+          Type: pipe
+          Name: Loan updated
+          SubType: trigger
+          Channel:
+            Resource: record
+            Id: quickbase
+            Selector: on_update
+          Filters:
+            Type: composite-expression
+            Notation: postfix
+            Expression:
+              - Type: relational-expression
+                Field: loan_status
+                Operator: equals
+                Value: Returned
+        InputsMeta:
+          $PipelineStep_InputsMeta_a:
+            Type: QB::PipelineStep::InputsMeta
+            Properties:
+              Trigger_On_All_Fields: false
+            PipelineStep_DataSources:
+              $PipelineStep_DataSource_2:
+                Type: QB::PipelineStep::DataSource::Fields
+                Properties:
+                  Fields:
+                    - !Ref
+                      App: $App_Lending_Library
+                      Table: $Table_Loans
+                      Field: $Field_Related_Book
+                  Name: export_fields
+              $PipelineStep_DataSource_3:
+                Type: QB::PipelineStep::DataSource::Table
+                Properties:
+                  Table: !Ref
+                    App: $App_Lending_Library
+                    Table: $Table_Loans
+                  Name: table
+              $PipelineStep_DataSource_4:
+                Type: QB::PipelineStep::DataSource::Fields
+                Properties:
+                  Fields:
+                    - !Ref
+                      App: $App_Lending_Library
+                      Table: $Table_Loans
+                      Field: $Field_Loan_Status
+                  Name: trigger_fields
+      - Type: QB::PipelineStep::Quickbase
+        Properties:
+          Id: b
+          Type: pipe
+          Name: Find the book
+          SubType: query
+          Channel:
+            Resource: record
+            Id: quickbase
+            Selector: search
+          Filters:
+            Type: composite-expression
+            Notation: postfix
+            Expression:
+              - Type: relational-expression
+                Field: id
+                Operator: equals
+                Value: "{{ a.related_book }}"
+        InputsMeta:
+          $PipelineStep_InputsMeta_b:
+            Type: QB::PipelineStep::InputsMeta
+            PipelineStep_DataSources:
+              $PipelineStep_DataSource_3:
+                Type: QB::PipelineStep::DataSource::Table
+                Properties:
+                  Table: !Ref
+                    App: $App_Lending_Library
+                    Table: $Table_Books
+                  Name: table
+      - Type: QB::PipelineStep::Loop
+        Properties:
+          Type: loop
+          Name: Loop
+          Target:
+            StepId: b
+            Type: step-reference
+        Steps:
+          - Type: QB::PipelineStep::Quickbase
+            Properties:
+              Id: c
+              Type: pipe
+              Name: Update the book
+              SubType: action
+              Channel:
+                Resource: record
+                Id: quickbase
+                Selector: update
+              Inputs:
+                Last_Returned: "{{ a.returned_on }}"
+              Target:
+                StepId: b
+                Type: step-reference

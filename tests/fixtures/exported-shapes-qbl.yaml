@@ -1,0 +1,55 @@
+Version: 0.15
+ParameterDefinitions:
+  App_Name_1:
+    Type: String
+    Description: Parameter for QB::Application-Name
+    Value: Reading List
+Resources:
+  $App_Reading:
+    Type: QB::Application
+    Properties:
+      Name: !Var
+        Name: App_Name_1
+    Tables:
+      $Table_Books:
+        Type: QB::Table
+        Id: 1
+        Properties:
+          Name: Books
+          AliasHint: _DBID_BOOKS
+        Fields:
+          $Field_Title:
+            Id: 6
+            Type: QB::Field::Text
+            Properties:
+              Label: Title
+        Forms:
+          Resources:
+            $Form_Books:
+              Type: QB::Form
+              Id: 10
+              Properties:
+                Name: Books
+              Elements:
+                $FormElement_1:
+                  Type: QB::Form::Element::Section
+                  Properties:
+                    Heading: Details
+                    NonFieldElementID: 0
+                  Elements:
+                    $Row:
+                      Type: QB::Form::Element::Row
+                      Elements:
+                        $FormElement_2:
+                          Type: QB::Form::Element::TextField
+                          Properties:
+                            Field: !Ref
+                              Field: $Field_Title
+        Emails:
+          $CustomEmail_Due:
+            Type: QB::CustomEmail
+            Properties:
+              Name: Due soon
+              EmailSettings:
+                Subject: Due soon
+                Content: A book is due back.

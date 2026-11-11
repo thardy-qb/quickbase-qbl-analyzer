@@ -1,0 +1,181 @@
+Solution:
+  Version: 0.14
+Resources:
+  $App_Main:
+    Type: QB::Application
+    Properties:
+      Name: Project Tracker
+      Manager: ops@example.com
+    Roles:
+      $Role_Admin:
+        Id: 10
+        Type: QB::Application::Role
+        Properties:
+          Name: Administrator
+          EditApp: true
+      $Role_Viewer:
+        Id: 11
+        Type: QB::Application::Role
+        Properties:
+          Name: Viewer
+    Tables:
+      $Table_Projects:
+        Type: QB::Table
+        Properties:
+          Name: Projects
+          AliasHint: _DBID_PROJECTS
+        Fields:
+          $Field_ProjectName:
+            Id: 6
+            Type: QB::Field::Text
+            Properties:
+              Label: Project Name
+              IsRequired: true
+              RolePermissions:
+                $Role_Viewer: View
+          $Field_Budget:
+            Id: 7
+            Type: QB::Field::Currency
+            Properties:
+              Label: Budget
+          $Field_TaskTotal:
+            Id: 8
+            Type: QB::Field::Summary
+            Properties:
+              Label: Total Task Hours
+              Summary:
+                Relationship:
+                  Relationship: $Relationship_ProjectsToTasks
+                TargetField:
+                  Table: $Table_Tasks
+                  Field: $Field_Hours
+                AccumulationType: SUM
+        Reports:
+          $Report_AllProjects:
+            Type: QB::Report::Table
+            Properties:
+              Name: All Projects
+              Columns:
+                - $Field_ProjectName
+                - $Field_Budget
+              RolePermissions:
+                $Role_Viewer: View
+      $Table_Tasks:
+        Type: QB::Table
+        Properties:
+          Name: Tasks
+          AliasHint: _DBID_TASKS
+        Fields:
+          $Field_TaskName:
+            Id: 6
+            Type: QB::Field::Text
+            Properties:
+              Label: Task Name
+          $Field_Hours:
+            Id: 7
+            Type: QB::Field::Numeric
+            Properties:
+              Label: Hours
+          $Field_RelatedProject:
+            Id: 8
+            Type: QB::Field::Numeric
+            Properties:
+              Label: Related Project
+          $Field_ProjectNameLookup:
+            Id: 9
+            Type: QB::Field::Lookup
+            Properties:
+              Label: Project Name
+              Lookup:
+                Relationship:
+                  Relationship: $Relationship_ProjectsToTasks
+                TargetField:
+                  Table: $Table_Projects
+                  Field: $Field_ProjectName
+                DisplayType: Text
+          $Field_VendorLookup:
+            Id: 10
+            Type: QB::Field::Lookup
+            Properties:
+              Label: Vendor Name
+              Lookup:
+                Relationship:
+                  Relationship: $Relationship_VendorsToTasks
+                TargetField:
+                  Table: $Table_Vendors
+                  Field: $Field_VendorName
+        Relationships:
+          $Relationship_ProjectsToTasks:
+            Type: QB::Relationship
+            Properties:
+              Parent:
+                Table: $Table_Projects
+              ReferenceField: $Field_RelatedProject
+          $Relationship_VendorsToTasks:
+            Type: QB::Relationship::CrossAppChild
+            Properties:
+              Parent:
+                App: $App_Vendors
+                Table: $Table_Vendors
+  $App_Vendors:
+    Type: QB::Application
+    Properties:
+      Name: Vendor Registry
+    Tables:
+      $Table_Vendors:
+        Type: QB::Table
+        Properties:
+          Name: Vendors
+          AliasHint: _DBID_VENDORS
+        Fields:
+          $Field_VendorName:
+            Id: 6
+            Type: QB::Field::Text
+            Properties:
+              Label: Vendor Name
+  $PipelineChannelAccount_QB:
+    Type: QB::PipelineChannelAccount
+    Properties:
+      Channel: quickbase
+      AccountId: acct-77
+  $Pipeline_Nightly:
+    Type: QB::Pipeline
+    Properties:
+      Name: Nightly Sync
+      Tags: ops,nightly
+      Owner: ops@example.com
+    Steps:
+      - Properties:
+          Id: a
+          Name: Query Projects
+          Type: pipe
+          SubType: quickbase.query_records
+          PipelineChannelAccount: $PipelineChannelAccount_QB
+          Channel:
+            Resource: quickbase
+            Id: qb-conn-1
+            Selector: table
+          InputsMeta:
+            source:
+              Table:
+                Table: $Table_Projects
+              Fields:
+                - Field: $Field_ProjectName
+                - Field: $Field_Budget
+      - Properties:
+          Id: b
+          Name: Push To Warehouse
+          Type: pipe
+          SubType: http.make_request
+          Channel:
+            Resource: http
+          Inputs:
+            Method: POST
+            Url: https://warehouse.example.com/v1/load?tableId=bqx1task
+            Body: '{"to": "bqx1task", "rows": 100}'
+            Content_Type: application/json
+      - Properties:
+          Id: c
+          Name: Only If Over Budget
+          Type: branch
+          SubType: condition

@@ -1,0 +1,28 @@
+Solution:
+  Version: 0.12
+Resources:
+  $App_A:
+    Type: QB::Application
+    Properties:
+      Name: Connected App
+    Tables:
+      $Table_Src:
+        Type: QB::Table
+        Properties:
+          Name: Source
+          AliasHint: _DBID_SRC
+        Fields:
+          $Field_One:
+            Id: 6
+            Type: QB::Field::Text
+            Properties:
+              Label: One
+        ConnectedData:
+          Type: QB::ConnectedTable
+          Properties:
+            Name: External Feed
+    Pages:
+      $Page_Home:
+        Type: QB::Page
+        Properties:
+          Name: home.html

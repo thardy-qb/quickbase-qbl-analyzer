@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Generated analysis output. Keep the directory pattern broad -- a run writes a
+# workbook, CSVs, JSON, and a ZIP into whatever --output-dir it was given.
+output/
+out/
+*-output/
+
+# Local inputs. Never commit customer QBL exports or schema payloads.
+*.qbl
+*qbl.yaml
+*qbl.yml
+*qbl.txt
+*table-schema.json
+
+# Generated artifacts, wherever they land. Test fixtures live under tests/ and
+# are committed deliberately, so they are re-included below.
+*.xlsx
+qbl-solution-overview.zip
+solution-digest.md
+parsed-qbl.json
+
+!tests/fixtures/**
